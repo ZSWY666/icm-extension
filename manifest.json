@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "ICM Incident State Enhancement",
+  "version": "1.0.0",
+  "description": "Adds a state tracking column to Microsoft ICM incidents.",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://portal.microsofticm.com/*"],
+      "css": ["content.css"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -81,11 +81,11 @@
     bottom: 24px;
     z-index: 2147483646;
     width: auto;
-    max-width: calc(100vw - 48px);
+    max-width: calc(100vw - 16px);
     font-family: "Segoe UI", sans-serif;
 }
 .icm-ext-detail-state > summary {
-    min-width: 148px;
+    min-width: min(148px, calc(100vw - 16px));
     height: auto;
     min-height: 36px;
     padding: 8px 26px 8px 12px;
@@ -93,7 +93,11 @@
     background: var(--tag-bg, #fff);
     color: var(--tag-fg, #0f172a);
     box-shadow: 0 2px 8px rgb(15 23 42 / 18%);
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
 }
+.icm-ext-detail-state.icm-ext-dragging > summary { cursor: grabbing; }
 .icm-ext-detail-state > summary::after { top: 8px; color: inherit; }
 .icm-ext-state-filter-option input[type="radio"] { margin: 0; accent-color: #2563eb; }
 

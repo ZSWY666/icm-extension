@@ -10,6 +10,8 @@
 
   const STORAGE = chrome.storage.sync;
   const MIGRATION_KEY = 'icm-sync-migration-v1';
+  const DETAIL_POSITION_KEY = 'icm-detail-tag-position';
+  let detailPosition = null;
   
   let tagsMap = new Map();
   let incidentTagsMap = new Map();
@@ -266,6 +268,121 @@
     }
   }
 
+  function parseDetailPosition(value) {
+    if (value == null) return null;
+    if (typeof value !== 'object' ||
+        !Number.isFinite(value.x) || !Number.isFinite(value.y) ||
+        value.x < 0 || value.y < 0) {
+      throw new Error('Invalid saved detail Tag position');
+    }
+    return { x: value.x, y: value.y };
+  }
+
+  function reportPositionError(error, action) {
+    console.error(`Failed to ${action} detail Tag position`, error);
+    window.alert(`${action === 'save' ? '保存' : '读取'} Tag 位置失败，Tag 数据不受影响。\n${storageErrorDetails(error)}`);
+  }
+
+  function enableDetailDragging(filter, summary, controller, positionMenu) {
+    const options = { signal: controller.signal };
+    let drag = null;
+    let suppressClick = false;
+
+    function moveTo(position) {
+      const rect = summary.getBoundingClientRect();
+      const x = Math.max(8, Math.min(position.x, window.innerWidth - rect.width - 8));
+      const y = Math.max(8, Math.min(position.y, window.innerHeight - rect.height - 8));
+      filter.style.left = `${x}px`;
+      filter.style.top = `${y}px`;
+      filter.style.right = 'auto';
+      filter.style.bottom = 'auto';
+      if (filter.open) positionMenu();
+      return { x, y };
+    }
+
+    filter._applyPosition = () => {
+      if (drag) return;
+      if (detailPosition) {
+        moveTo(detailPosition);
+      } else {
+        filter.style.left = '';
+        filter.style.top = '';
+        filter.style.right = '';
+        filter.style.bottom = '';
+        const rect = summary.getBoundingClientRect();
+        if (rect.left < 8 || rect.top < 8 ||
+            rect.left + rect.width > window.innerWidth - 8 ||
+            rect.bottom > window.innerHeight - 8) {
+          moveTo({ x: rect.left, y: rect.top });
+        }
+      }
+    };
+
+    summary.title += '；拖拽可移动，位置仅保存在当前浏览器';
+    summary.addEventListener('pointerdown', event => {
+      if (!event.isPrimary || event.button !== 0 || drag) return;
+      suppressClick = false;
+      const rect = summary.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        startX: event.clientX, startY: event.clientY,
+        origin: { x: rect.left, y: rect.top },
+        moved: false
+      };
+      summary.setPointerCapture(event.pointerId);
+    }, options);
+
+    summary.addEventListener('pointermove', event => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+      drag.moved = true;
+      suppressClick = true;
+      filter.classList.add('icm-ext-dragging');
+      event.preventDefault();
+      moveTo({ x: drag.origin.x + dx, y: drag.origin.y + dy });
+    }, options);
+
+    function finishDrag(event, cancelled) {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const finished = drag;
+      drag = null;
+      filter.classList.remove('icm-ext-dragging');
+      if (summary.hasPointerCapture(event.pointerId)) summary.releasePointerCapture(event.pointerId);
+      if (!finished.moved) {
+        filter._applyPosition();
+        return;
+      }
+      if (cancelled) {
+        filter._applyPosition();
+        return;
+      }
+      detailPosition = moveTo({
+        x: finished.origin.x + event.clientX - finished.startX,
+        y: finished.origin.y + event.clientY - finished.startY
+      });
+      const position = { ...detailPosition };
+      return queueOperation(DETAIL_POSITION_KEY, () =>
+        chrome.storage.local.set({ [DETAIL_POSITION_KEY]: position })
+      ).catch(error => reportPositionError(error, 'save'));
+    }
+
+    summary.addEventListener('pointerup', event => finishDrag(event, false), options);
+    summary.addEventListener('pointercancel', event => finishDrag(event, true), options);
+    summary.addEventListener('lostpointercapture', event => finishDrag(event, true), options);
+    summary.addEventListener('click', event => {
+      if (!suppressClick || event.detail === 0) return;
+      suppressClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+    }, options);
+    window.addEventListener('resize', () => {
+      filter._applyPosition();
+      if (filter.open) positionMenu();
+    }, options);
+  }
+
   function createFilter(incidentId = null) {
     const controller = new AbortController();
     const filter = document.createElement('details');
@@ -469,6 +586,7 @@
       
       filter._tagsSignature = JSON.stringify(Array.from(tagsMap.values()));
       updateSummary();
+      filter._applyPosition?.();
       if (filter.open) positionMenu();
     }
 
@@ -566,6 +684,8 @@
         ? rect.bottom + 2 : rect.top - bounds.height - 2)}px`;
     }
 
+    if (incidentId) enableDetailDragging(filter, summary, controller, positionMenu);
+
     filter.addEventListener('toggle', () => {
       menu.hidden = !filter.open;
       if (filter.open) positionMenu();
@@ -610,6 +730,7 @@
     detailControl = createFilter(incidentId);
     detailControl.dataset.incidentId = incidentId;
     document.body.appendChild(detailControl);
+    detailControl._applyPosition();
   }
 
   function updateSelectOptions(select) {
@@ -755,6 +876,15 @@
   }
 
   chrome.storage.onChanged.addListener(async (changes, areaName) => {
+    if (initialized && areaName === 'local' && Object.prototype.hasOwnProperty.call(changes, DETAIL_POSITION_KEY)) {
+      try {
+        detailPosition = parseDetailPosition(changes[DETAIL_POSITION_KEY].newValue);
+        detailControl?._applyPosition();
+      } catch (error) {
+        reportPositionError(error, 'load');
+      }
+      return;
+    }
     if (!initialized || areaName !== 'sync' || !Object.keys(changes).some(key => key.startsWith(STORAGE_PREFIX))) return;
     const shouldUpdateFilters = Object.keys(changes).some(key => key.startsWith(STORAGE_PREFIX + 'tag:'));
     try {
@@ -802,6 +932,12 @@
       console.error('Failed to initialize synced Tags', error);
       window.alert(`初始化 Tag 同步失败，原有本地数据仍保留。\n${storageErrorDetails(error)}`);
       return;
+    }
+    try {
+      const localData = await chrome.storage.local.get(DETAIL_POSITION_KEY);
+      detailPosition = parseDetailPosition(localData[DETAIL_POSITION_KEY]);
+    } catch (error) {
+      reportPositionError(error, 'load');
     }
     initialized = true;
     observer.observe(document.body, {

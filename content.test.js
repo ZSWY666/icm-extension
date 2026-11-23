@@ -11,6 +11,7 @@ const positionKey = 'icm-detail-tag-position';
 class Element {
   constructor(tagName) {
     this.tagName = tagName;
+    this.nodeType = 1;
     this.children = [];
     this.dataset = {};
     this.attributes = {};
@@ -21,11 +22,19 @@ class Element {
     this.selectedValue = '';
     this.classList = {
       add: name => { this.className = [...new Set([...this.className.split(' '), name])].join(' '); },
-      remove: name => { this.className = this.className.split(' ').filter(value => value !== name).join(' '); }
+      remove: name => { this.className = this.className.split(' ').filter(value => value !== name).join(' '); },
+      contains: name => this.className.split(' ').includes(name),
+      toggle: (name, force) => {
+        const enabled = force === undefined ? !this.classList.contains(name) : force;
+        if (enabled) this.classList.add(name);
+        else this.classList.remove(name);
+        return enabled;
+      }
     };
   }
 
   appendChild(child) {
+    if (child.parent) child.remove();
     this.children.push(child);
     child.parent = this;
     return child;
@@ -37,6 +46,19 @@ class Element {
 
   get isConnected() {
     return this.tagName === 'body' || !!this.parent?.isConnected;
+  }
+
+  get parentElement() {
+    return this.parent || null;
+  }
+
+  get firstElementChild() {
+    return this.children[0] || null;
+  }
+
+  get nextElementSibling() {
+    if (!this.parent) return null;
+    return this.parent.children[this.parent.children.indexOf(this) + 1] || null;
   }
 
   contains(element) {
@@ -57,6 +79,7 @@ class Element {
   releasePointerCapture() { this.pointerId = null; }
 
   insertBefore(child, reference) {
+    if (child.parent) child.remove();
     const index = this.children.indexOf(reference);
     if (index < 0) return this.appendChild(child);
     this.children.splice(index, 0, child);
@@ -65,11 +88,14 @@ class Element {
   }
 
   remove() {
+    if (!this.parent) return;
     this.parent.children.splice(this.parent.children.indexOf(this), 1);
+    this.parent = null;
   }
 
   set innerHTML(value) {
     assert.ok(value === '' || value.startsWith('<svg '));
+    this.children.forEach(child => { child.parent = null; });
     this.children = [];
   }
 
@@ -105,17 +131,38 @@ class Element {
     };
   }
 
-  querySelector(selector) {
+  matches(selector) {
+    return selector.split(',').some(part => {
+      part = part.trim();
+      const not = part.match(/^(.*):not\((\.[\w-]+)\)$/);
+      if (not) return this.matches(not[1]) && !this.matches(not[2]);
+      if (part.startsWith('.')) return this.classList.contains(part.slice(1));
+      const tag = part.match(/^[a-z]+/i)?.[0];
+      if (tag && this.tagName !== tag) return false;
+      const attrs = [...part.matchAll(/\[([^*=\]]+)(\*?=)"([^"]+)"\]/g)];
+      if (attrs.length) return attrs.every(([, name, operator, value]) => {
+        const actual = name === 'type' || name === 'href' ? this[name] : this.getAttribute(name);
+        return operator === '*=' ? actual?.includes(value) : actual === value;
+      });
+      return this.tagName === part;
+    });
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
     for (const child of this.children) {
-      if (child.tagName === selector || child.className.split(' ').some(name => `.${name}` === selector)) return child;
-      const descendant = child.querySelector(selector);
-      if (descendant) return descendant;
+      if (child.matches(selector)) matches.push(child);
+      matches.push(...child.querySelectorAll(selector));
     }
-    return null;
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
   }
 
   closest(selector) {
-    if (selector.split(', ').includes(`.${this.className}`)) return this;
+    if (this.matches(selector)) return this;
     return this.parent?.closest(selector) || null;
   }
 }
@@ -156,7 +203,8 @@ function createHarness() {
       body: new Element('body'),
       createElement: name => new Element(name),
       addEventListener: (name, callback) => { documentEvents[name] = callback; },
-      querySelectorAll: selector => selector === '.searchresults-k-grid' ? grids : []
+      querySelectorAll: selector => selector === '.elx-table [data-automationid="DetailsList"]'
+        ? grids : context.document.body.querySelectorAll(selector)
     },
     window: {
       innerWidth: 1024, innerHeight: 768,
@@ -213,38 +261,46 @@ function createHarness() {
   }
 
   function addGrid(incidentId = '123') {
-    const row = new Element('tr');
+    const grid = new Element('div');
+    const ariaGrid = new Element('div');
+    ariaGrid.setAttribute('role', 'grid');
+    ariaGrid.setAttribute('aria-colcount', '2');
+    const headerRow = new Element('div');
+    headerRow.setAttribute('role', 'row');
+    headerRow.setAttribute('data-automationid', 'DetailsHeader');
+    const checkHeader = new Element('div');
+    checkHeader.setAttribute('role', 'columnheader');
+    const idHeader = new Element('div');
+    idHeader.setAttribute('role', 'columnheader');
+    idHeader.setAttribute('data-automationid', 'ColumnsHeaderColumn');
+    idHeader.setAttribute('data-item-key', 'Id');
+    headerRow.append(checkHeader, idHeader);
+
+    const listCell = new Element('div');
+    listCell.setAttribute('data-automationid', 'ListCell');
+    const row = new Element('div');
+    row.setAttribute('role', 'row');
+    row.setAttribute('data-automationid', 'DetailsRow');
     row.link = { href: `https://portal.microsofticm.com/imp/v5/incidents/details/${incidentId}/summary` };
     const querySelector = row.querySelector.bind(row);
     row.querySelector = selector => selector.startsWith('a[href') ? row.link : querySelector(selector);
-    const colgroup = { querySelector: () => ({}) };
-    const headerFilter = {
-      _tagsSignature: null,
-      updates: 0,
-      _updateMenuContent() {
-        this._tagsSignature = context.api.getTagsSignature();
-        this.updates++;
-      }
-    };
-    const headerRow = {
-      querySelector: selector => selector === '.icm-ext-state-filter' ? headerFilter : {}
-    };
-    const header = {
-      dataset: { icmExtStateWidthReserved: 'true' },
-      querySelector: selector => selector === 'colgroup' ? colgroup : headerRow
-    };
-    const body = {
-      ...header,
-      querySelectorAll: () => [row]
-    };
-    const grid = {
-      querySelector: selector => selector === '.k-grid-header table' ? header : body,
-      querySelectorAll: () => [row]
-    };
+    const checkCell = new Element('div');
+    checkCell.setAttribute('role', 'gridcell');
+    const fields = new Element('div');
+    fields.setAttribute('data-automationid', 'DetailsRowFields');
+    const idCell = new Element('div');
+    idCell.setAttribute('role', 'gridcell');
+    idCell.setAttribute('data-automation-key', 'Id');
+    fields.appendChild(idCell);
+    row.append(checkCell, fields);
+    listCell.appendChild(row);
+    ariaGrid.append(headerRow, listCell);
+    grid.appendChild(ariaGrid);
+    context.document.body.appendChild(grid);
     grids.push(grid);
     return {
-      grid, headerFilter,
-      row,
+      grid, ariaGrid, headerRow, checkHeader, idHeader, listCell, row, fields, idCell,
+      get headerFilter() { return headerRow.querySelector('.icm-ext-state-filter'); },
       get select() { return row.querySelector('.icm-ext-state-td')?.querySelector('.icm-ext-state-select'); }
     };
   }
@@ -470,21 +526,127 @@ test('returning to cached Search rows applies Case edits and new Tag options', a
   assert.equal(originalSelect.value, 'old');
 
   h.grids.push(fixture.grid);
-  const previousHeaderUpdates = fixture.headerFilter.updates;
+  const previousSignature = fixture.headerFilter._tagsSignature;
   h.enhanceGrid();
   assert.equal(fixture.select, originalSelect);
   assert.equal(fixture.select.value, 'new');
   assert.equal(fixture.select.options[2].textContent, 'New');
   assert.equal(fixture.select.properties['--tag-bg'], '#3CB44B');
-  assert.equal(fixture.row.hidden, false);
-  assert.equal(fixture.headerFilter.updates, previousHeaderUpdates + 1);
+  assert.equal(fixture.row.classList.contains('icm-ext-filtered'), false);
+  assert.notEqual(fixture.headerFilter._tagsSignature, previousSignature);
+  assert.equal(fixture.headerFilter._tagsSignature, h.getTagsSignature());
 
   const options = [...fixture.select.options];
-  const headerUpdates = fixture.headerFilter.updates;
+  const headerFilter = fixture.headerFilter;
   h.enhanceGrid();
-  assert.equal(fixture.headerFilter.updates, headerUpdates);
+  assert.equal(fixture.headerFilter, headerFilter);
   assert.deepEqual(fixture.select.options, options);
   options.forEach((option, index) => assert.equal(fixture.select.options[index], option));
+});
+
+test('Fluent incident grids receive one aligned column without changing unrelated grids', async () => {
+  const h = createHarness();
+  const fixture = h.addGrid();
+  const unrelated = h.addGrid();
+  unrelated.row.link.href = 'https://portal.microsofticm.com/other/123';
+  await h.init();
+
+  const heading = fixture.headerRow.querySelector('.icm-ext-state-th');
+  const cell = fixture.row.querySelector('.icm-ext-state-td');
+  assert.equal(fixture.headerRow.children[0], fixture.checkHeader);
+  assert.equal(fixture.headerRow.children[1], heading);
+  assert.equal(fixture.headerRow.children[2], fixture.idHeader);
+  assert.equal(fixture.fields.children[0], cell);
+  assert.equal(fixture.fields.children[1], fixture.idCell);
+  assert.equal(heading.getAttribute('role'), 'columnheader');
+  assert.equal(cell.getAttribute('role'), 'gridcell');
+  assert.equal(fixture.ariaGrid.getAttribute('aria-colcount'), '3');
+  assert.equal(unrelated.headerFilter, null);
+  assert.equal(unrelated.select, undefined);
+
+  fixture.ariaGrid.setAttribute('aria-colcount', '2');
+  h.mutate([{ type: 'attributes', target: fixture.ariaGrid, addedNodes: [] }]);
+  h.flushTimers();
+  fixture.headerRow.insertBefore(fixture.idHeader, heading);
+  fixture.fields.insertBefore(fixture.idCell, cell);
+  h.mutate([{ type: 'childList', target: fixture.headerRow, addedNodes: [fixture.idHeader] }]);
+  h.flushTimers();
+  h.enhanceGrid();
+  assert.equal(fixture.ariaGrid.getAttribute('aria-colcount'), '3');
+  assert.equal(heading.nextElementSibling, fixture.idHeader);
+  assert.equal(fixture.fields.firstElementChild, cell);
+  assert.equal(fixture.headerRow.querySelectorAll('.icm-ext-state-th').length, 1);
+  assert.equal(fixture.row.querySelectorAll('.icm-ext-state-td').length, 1);
+});
+
+test('Fluent filtering hides virtual-list wrappers and reconciles recycled rows', async () => {
+  const h = createHarness();
+  h.setTag('one', 'One', '#E6194B');
+  h.data[`${prefix}incident:123`] = { tagId: 'one' };
+  const fixture = h.addGrid();
+  await h.init();
+  const menu = h.context.document.body.querySelector('.icm-ext-state-filter-menu');
+  const unmarked = menu.querySelectorAll('input[type="checkbox"]').find(input => input.value === '');
+  unmarked.checked = false;
+  await unmarked.listeners.change({ stopPropagation() {}, currentTarget: unmarked });
+  assert.equal(fixture.listCell.classList.contains('icm-ext-filtered'), false);
+
+  fixture.row.link.href = 'https://portal.microsofticm.com/imp/v5/incidents/details/456';
+  h.mutate([{ type: 'attributes', target: fixture.row, addedNodes: [] }]);
+  h.flushTimers();
+  assert.equal(fixture.select.value, '');
+  assert.equal(fixture.row.classList.contains('icm-ext-filtered'), true);
+  assert.equal(fixture.listCell.classList.contains('icm-ext-filtered'), true);
+
+  h.data[`${prefix}incident:456`] = { tagId: 'one' };
+  await h.storageChanged(`${prefix}incident:456`);
+  assert.equal(fixture.select.value, 'one');
+  assert.equal(fixture.listCell.classList.contains('icm-ext-filtered'), false);
+
+  const removedLink = new Element('a');
+  removedLink.href = fixture.row.link.href;
+  fixture.row.link = null;
+  h.mutate([{ type: 'childList', target: fixture.row, addedNodes: [], removedNodes: [removedLink] }]);
+  h.flushTimers();
+  assert.equal(fixture.select, null);
+  assert.equal(fixture.row.querySelector('.icm-ext-state-td').getAttribute('aria-label'), '无法识别事件 ID');
+  assert.equal(fixture.listCell.classList.contains('icm-ext-filtered'), false);
+});
+
+test('filtering one row does not hide a shared virtual-list wrapper', async () => {
+  const h = createHarness();
+  h.setTag('one', 'One', '#E6194B');
+  h.data[`${prefix}incident:123`] = { tagId: 'one' };
+  const first = h.addGrid('123');
+  const second = h.addGrid('456');
+  first.listCell.appendChild(second.row);
+  await h.init();
+  const menu = h.context.document.body.querySelector('.icm-ext-state-filter-menu');
+  const unmarked = menu.querySelectorAll('input[type="checkbox"]').find(input => input.value === '');
+  unmarked.checked = false;
+  await unmarked.listeners.change({ stopPropagation() {}, currentTarget: unmarked });
+  assert.equal(first.row.classList.contains('icm-ext-filtered'), false);
+  assert.equal(second.row.classList.contains('icm-ext-filtered'), true);
+  assert.equal(first.listCell.classList.contains('icm-ext-filtered'), false);
+});
+
+test('a replaced Fluent header disposes its old menu and restores the Tag column', async () => {
+  const h = createHarness();
+  const fixture = h.addGrid();
+  await h.init();
+  const oldHeading = fixture.headerRow.querySelector('.icm-ext-state-th');
+  const oldFilter = fixture.headerFilter;
+  const oldMenu = h.context.document.body.querySelector('.icm-ext-state-filter-menu');
+  const originalSelect = fixture.select;
+
+  oldHeading.remove();
+  h.mutate([{ type: 'childList', target: fixture.headerRow, addedNodes: [], removedNodes: [oldHeading] }]);
+  h.flushTimers();
+  assert.notEqual(fixture.headerFilter, oldFilter);
+  assert.equal(oldMenu.isConnected, false);
+  assert.equal(h.context.document.body.querySelectorAll('.icm-ext-state-filter-menu').length, 1);
+  assert.equal(fixture.headerRow.querySelectorAll('.icm-ext-state-th').length, 1);
+  assert.equal(fixture.select, originalSelect);
 });
 
 test('a recycled Search row reads and saves the current Incident ID', async () => {

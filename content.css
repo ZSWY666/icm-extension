@@ -220,26 +220,28 @@
 .icm-ext-state-filter-menu button:focus-visible,
 .icm-ext-state-filter-menu input:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
 
-.searchresults-k-grid col.icm-ext-state-col { width: 148px; }
 .icm-ext-state-th,
 .icm-ext-state-td {
     position: relative;
     box-sizing: border-box;
-    padding-right: 0 !important;
-    padding-left: 4px !important;
+    display: inline-flex;
+    align-items: center;
+    width: 148px;
+    padding: 0 0 0 4px !important;
     overflow: hidden;
 }
-.icm-ext-state-th .ui-resizable-e,
-.icm-ext-state-th .k-resize-handle,
-.icm-ext-state-th .k-resize-handle-inner {
-    right: 0 !important;
-    left: auto !important;
-    width: 6px !important;
+.icm-ext-state-th {
+    height: 42px;
+    vertical-align: top;
+    line-height: normal;
 }
-.icm-ext-state-th + th,
-.icm-ext-state-td + td {
-    min-width: 112px;
-    padding-left: 8px !important;
+.icm-ext-state-td {
+    flex: 0 0 148px;
+    min-height: 32px;
+}
+.elx-table [data-automationid="ListCell"].icm-ext-filtered,
+.elx-table [data-automationid="DetailsRow"].icm-ext-filtered {
+    display: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

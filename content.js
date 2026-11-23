@@ -1,5 +1,7 @@
 (() => {
   const STORAGE_PREFIX = 'icm-incident-tags:';
+  const GRID_SELECTOR = '.elx-table [data-automationid="DetailsList"]';
+  const GRID_ROW_SELECTOR = '[data-automationid="DetailsRow"][role="row"]';
 
   const PALETTE = [
     '#E6194B', '#3CB44B', '#FFE119', '#4363D8', '#F58231',
@@ -18,6 +20,7 @@
   let activeFilters = new Set();
   
   const writeQueues = new Map();
+  const gridControls = new Set();
   let enhanceTimer;
   let detailControl;
   let currentPageUrl = location.href;
@@ -219,13 +222,7 @@
   function getIncidentId(row) {
     const incidentLink = row.querySelector('a[href*="/incidents/details/"]');
     const linkMatch = incidentLink?.href.match(/\/incidents\/details\/(\d+)/i);
-    if (linkMatch) return linkMatch[1];
-
-    const checkbox = row.querySelector('input[type="checkbox"].gridCheckbox');
-    const labelMatch = checkbox?.getAttribute('aria-label')?.match(/IncidentId\s+(\d+)/i);
-    if (labelMatch) return labelMatch[1];
-
-    return /^\d+$/.test(checkbox?.id || '') ? checkbox.id : null;
+    return linkMatch ? linkMatch[1] : null;
   }
 
   function applyTagStyles(element, tagId) {
@@ -242,18 +239,24 @@
   }
 
   function applyFilter(grid) {
-    for (const row of grid.querySelectorAll('.k-grid-content tbody tr[role="row"]')) {
+    if (!grid.querySelector('.icm-ext-state-th')) return;
+    for (const row of grid.querySelectorAll(GRID_ROW_SELECTOR)) {
       const incidentId = getIncidentId(row);
-      if (!incidentId) continue;
-      const tagId = getIncidentTagId(incidentId);
-      row.hidden = !activeFilters.has(tagId);
+      const hidden = incidentId ? !activeFilters.has(getIncidentTagId(incidentId)) : false;
+      row.classList.toggle('icm-ext-filtered', hidden);
+      const listCell = row.closest('[data-automationid="ListCell"]');
+      if (listCell) {
+        const containsOneRow = listCell.querySelectorAll(GRID_ROW_SELECTOR).length === 1;
+        listCell.classList.toggle('icm-ext-filtered', containsOneRow && hidden);
+      }
     }
   }
 
   function refreshAllGrids() {
     if (detailControl) detailControl._updateMenuContent();
-    for (const grid of document.querySelectorAll('.searchresults-k-grid')) {
-      for (const row of grid.querySelectorAll('.k-grid-content tbody tr[role="row"]')) {
+    for (const grid of document.querySelectorAll(GRID_SELECTOR)) {
+      if (!grid.querySelector('.icm-ext-state-th')) continue;
+      for (const row of grid.querySelectorAll(GRID_ROW_SELECTOR)) {
         const incidentId = getIncidentId(row);
         if (!incidentId) continue;
         const select = row.querySelector('.icm-ext-state-select');
@@ -424,7 +427,7 @@
         }
         const total = tagsMap.size + 1;
         summary.textContent = activeFilters.size === total ? 'Tag' : `Tag(${activeFilters.size})`;
-        for (const grid of document.querySelectorAll('.searchresults-k-grid')) applyFilter(grid);
+        for (const grid of document.querySelectorAll(GRID_SELECTOR)) applyFilter(grid);
       };
 
       const addOption = (id, name, color) => {
@@ -608,7 +611,7 @@
         }
         const total = tagsMap.size + 1;
         summary.textContent = selected ? 'Tag' : 'Tag(0)';
-        for (const grid of document.querySelectorAll('.searchresults-k-grid')) applyFilter(grid);
+        for (const grid of document.querySelectorAll(GRID_SELECTOR)) applyFilter(grid);
       });
       actions.appendChild(button);
     }
@@ -708,6 +711,9 @@
     for (const eventName of ['pointerdown', 'mousedown', 'click']) {
       filter.addEventListener(eventName, event => event.stopPropagation());
     }
+    filter.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') event.stopPropagation();
+    });
     
     filter._updateMenuContent = updateMenuContent;
     filter._dispose = () => {
@@ -766,51 +772,58 @@
     applyTagStyles(select, select.value);
   }
 
-  function insertColumn(colgroup) {
-    if (!colgroup || colgroup.querySelector('.icm-ext-state-col')) return;
-    const col = document.createElement('col');
-    col.className = 'icm-ext-state-col';
-    col.style.width = '148px';
-    colgroup.insertBefore(col, colgroup.children[1] || null);
-  }
-
-  function reserveColumnWidth(table) {
-    if (table.dataset.icmExtStateWidthReserved === 'true') return;
-    const currentWidth = Number.parseFloat(table.style.width) || table.getBoundingClientRect().width;
-    table.style.width = `${currentWidth + 148}px`;
-    table.dataset.icmExtStateWidthReserved = 'true';
-  }
-
   function enhanceGrid() {
-    for (const grid of document.querySelectorAll('.searchresults-k-grid')) {
-      const headerTable = grid.querySelector('.k-grid-header table');
-      const bodyTable = grid.querySelector('.k-grid-content table') ||
-        grid.querySelector('.k-grid-header + .k-grid-content table');
-      if (!headerTable || !bodyTable) continue;
+    for (const filter of gridControls) {
+      if (filter.isConnected) continue;
+      const heading = filter.parentElement;
+      filter._dispose();
+      if (heading?.classList.contains('icm-ext-state-th')) heading.remove();
+      gridControls.delete(filter);
+    }
 
-      reserveColumnWidth(headerTable);
-      reserveColumnWidth(bodyTable);
-      insertColumn(headerTable.querySelector('colgroup'));
-      insertColumn(bodyTable.querySelector('colgroup'));
+    for (const grid of document.querySelectorAll(GRID_SELECTOR)) {
+      const headerRow = grid.querySelector('[data-automationid="DetailsHeader"][role="row"]');
+      if (!headerRow) continue;
+      const firstColumn = Array.from(headerRow.children).find(child =>
+        child.getAttribute('data-automationid') === 'ColumnsHeaderColumn'
+      );
+      if (!firstColumn) continue;
 
-      const headerRow = headerTable.querySelector('thead tr');
-      if (headerRow && !headerRow.querySelector('.icm-ext-state-th')) {
-        const heading = document.createElement('th');
-        heading.className = 'k-header icm-ext-state-th';
+      const rows = grid.querySelectorAll(GRID_ROW_SELECTOR);
+      let heading = headerRow.querySelector('.icm-ext-state-th');
+      if (!heading && !Array.from(rows).some(row => getIncidentId(row))) continue;
+      if (!heading) {
+        heading = document.createElement('div');
+        heading.className = 'ms-DetailsHeader-cell icm-ext-state-th';
         heading.setAttribute('role', 'columnheader');
-        heading.appendChild(createFilter());
-        headerRow.insertBefore(heading, headerRow.children[1] || null);
+        headerRow.insertBefore(heading, firstColumn);
+      } else if (heading.nextElementSibling !== firstColumn) {
+        headerRow.insertBefore(heading, firstColumn);
       }
-      const headerFilter = headerRow?.querySelector('.icm-ext-state-filter');
-      if (headerFilter &&
-          headerFilter._tagsSignature !== JSON.stringify(Array.from(tagsMap.values()))) {
+      let headerFilter = heading.querySelector('.icm-ext-state-filter');
+      if (!headerFilter) {
+        headerFilter = createFilter();
+        gridControls.add(headerFilter);
+        heading.appendChild(headerFilter);
+      } else if (headerFilter._tagsSignature !== JSON.stringify(Array.from(tagsMap.values()))) {
         headerFilter._updateMenuContent();
       }
 
-      for (const row of bodyTable.querySelectorAll('tbody tr[role="row"]')) {
+      const ariaGrid = grid.querySelector('[role="grid"]');
+      const nativeColumnCount = headerRow.querySelectorAll('[role="columnheader"]:not(.icm-ext-state-th)').length;
+      if (ariaGrid?.getAttribute('aria-colcount') === String(nativeColumnCount)) {
+        ariaGrid.setAttribute('aria-colcount', String(nativeColumnCount + 1));
+      }
+
+      for (const row of rows) {
+        const fields = row.querySelector('[data-automationid="DetailsRowFields"]');
+        if (!fields) continue;
         const incidentId = getIncidentId(row);
         const existingCell = row.querySelector('.icm-ext-state-td');
         const existingSelect = existingCell?.querySelector('.icm-ext-state-select');
+        if (existingCell && fields.firstElementChild !== existingCell) {
+          fields.insertBefore(existingCell, fields.firstElementChild);
+        }
         if (existingSelect && incidentId) {
           const label = `事件 ${incidentId} 的 Tag`;
           if (existingSelect.getAttribute('aria-label') !== label) {
@@ -824,13 +837,13 @@
         if (existingCell && !incidentId && !existingSelect) continue;
         if (existingCell) existingCell.remove();
 
-        const cell = document.createElement('td');
-        cell.className = 'icm-ext-state-td';
+        const cell = document.createElement('div');
+        cell.className = 'ms-DetailsRow-cell icm-ext-state-td';
         cell.setAttribute('role', 'gridcell');
 
         if (!incidentId) {
           cell.setAttribute('aria-label', '无法识别事件 ID');
-          row.insertBefore(cell, row.children[1] || null);
+          fields.insertBefore(cell, fields.children[0] || null);
           continue;
         }
 
@@ -843,7 +856,7 @@
         select.value = getIncidentTagId(incidentId);
         applyTagStyles(select, select.value);
 
-        for (const eventName of ['pointerdown', 'mousedown', 'click']) {
+        for (const eventName of ['pointerdown', 'mousedown', 'click', 'keydown']) {
           select.addEventListener(eventName, event => event.stopPropagation());
         }
         
@@ -869,7 +882,7 @@
         });
 
         cell.appendChild(select);
-        row.insertBefore(cell, row.children[1] || null);
+        fields.insertBefore(cell, fields.children[0] || null);
       }
       applyFilter(grid);
     }
@@ -910,9 +923,14 @@
     const hasRelevantChange = mutations.some(mutation =>
       (mutation.type === 'attributes' &&
         !mutation.target.closest('.icm-ext-state-td, .icm-ext-state-filter, .icm-ext-state-filter-menu')) ||
-      Array.from(mutation.addedNodes).some(node =>
+      Array.from(mutation.addedNodes || []).some(node =>
         node.nodeType === Node.ELEMENT_NODE &&
-        !node.matches?.('.icm-ext-state-col, .icm-ext-state-th, .icm-ext-state-td')
+        !node.matches?.('.icm-ext-state-th, .icm-ext-state-td')
+      ) ||
+      Array.from(mutation.removedNodes || []).some(node =>
+        node.nodeType === Node.ELEMENT_NODE &&
+        (node.matches?.('.icm-ext-state-th, .icm-ext-state-td, .icm-ext-state-filter, a[href*="/incidents/details/"]') ||
+          node.querySelector?.('.icm-ext-state-th, .icm-ext-state-td, .icm-ext-state-filter, a[href*="/incidents/details/"]'))
       )
     );
     if (!hasRelevantChange) return;
@@ -944,7 +962,7 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['href', 'aria-label', 'id']
+      attributeFilter: ['href', 'aria-label', 'aria-colcount', 'id']
     });
     enhanceGrid();
     enhanceDetailPage();
